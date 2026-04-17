@@ -1,97 +1,184 @@
-# FlavorFlex DevOps Project
+# FlavorFlex — DevOps Showcase
 
 ## Overview
 
-FlavorFlex is a simple React application designed to be a recipe hub based on the needs on recipes of the users. This project includes a CI/CD pipeline using GitHub Actions to build a Docker image and deploy it to Docker Hub.
+FlavorFlex is a React recipe app used as a vehicle to demonstrate a complete DevOps workflow: containerization with Docker, automated CI/CD via GitHub Actions, and image distribution through Docker Hub.
+
+The app itself is intentionally simple — the focus is the infrastructure and deployment pipeline around it.
+
+---
 
 ## Table of Contents
 
-- [Prerequisites](#prerequisites)
+- [DevOps Architecture](#devops-architecture)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Docker Setup](#docker-setup)
+- [Running Locally (No Docker)](#running-locally-no-docker)
+- [Run with Docker (Local Build)](#run-with-docker-local-build)
+- [Pull from Docker Hub](#pull-from-docker-hub)
 
-- [Installation and running the project locally](#Local)
+---
 
-- [Running the project using docker](#Docker)
+## DevOps Architecture
 
-- [Get the application using Docker Hub](#Docker-Hub)
-
-## Prerequisites
-
-Before you begin, ensure you have met the following requirements:
-
-- [Node.js](https://nodejs.org/) (version 20.15.0)
-- [Docker](https://www.docker.com/get-started)
-- [Docker Hub Account](https://hub.docker.com/)
-- [Git](https://git-scm.com/)
-## Local
-
-1. Clone the repository:
-  
-```bash
-   git clone https://github.com/NicoZela23/final-project-devops-nzo.git
-   cd final-project-devops-nzo
+```
+Developer pushes to master
+        │
+        ▼
+┌─────────────────────────────────────────────┐
+│           GitHub Actions CI/CD              │
+│                                             │
+│  1. Checkout code                           │
+│  2. Setup Node.js 20.15.0                   │
+│  3. Cache node_modules (package-lock.json)  │
+│  4. Install dependencies (npm ci)           │
+│  5. Run Jest unit tests                     │
+│  6. Run ESLint static analysis              │
+│  7. Build production bundle (Vite)          │
+│  8. Build Docker image (multi-stage)        │
+│  9. Push to Docker Hub (tagged by SHA)      │
+└─────────────────────────────────────────────┘
+        │
+        ▼
+  Docker Hub Registry
+  nicozela23/final-project-devops-nzo:<git-sha>
 ```
 
-2. Install the dependencies and start the server
+---
 
-```bash
-   npm install
-   npm run dev
+## CI/CD Pipeline
+
+Pipeline defined in `.github/workflows/docker-publish.yml`.
+
+**Triggers:** push or pull request to `master`.
+
+**Key decisions:**
+
+| Step | Tool | Why |
+|------|------|-----|
+| Dependency install | `npm ci` | Reproducible install, respects lock file |
+| Caching | `actions/cache@v3` | Caches `node_modules` by `package-lock.json` hash — skips install on unchanged deps |
+| Tests | Jest `--ci --runInBand` | Serial execution, no interactive prompts, exits non-zero on failure |
+| Linting | ESLint | `continue-on-error: true` — warns without blocking deploy |
+| Image tag | `github.sha` | Every push produces a unique, traceable image |
+| Auth | GitHub Secrets | `DOCKER_USERNAME` / `DOCKER_PASSWORD` — credentials never hardcoded |
+
+**Secrets required in GitHub repo settings:**
+
+```
+DOCKER_USERNAME   → Docker Hub username
+DOCKER_PASSWORD   → Docker Hub password or access token
 ```
 
-## Docker
+---
 
-1. Clone the repository:  
+## Docker Setup
 
-```bash
-   git clone https://github.com/NicoZela23/final-project-devops-nzo.git
-   cd final-project-devops-nzo
+### Multi-Stage Dockerfile
+
+The `Dockerfile` uses a two-stage build to keep the final image small:
+
+```dockerfile
+# Stage 1 — Build
+FROM node:20.15.0-alpine AS build
+WORKDIR /app
+COPY package.json ./
+RUN npm install
+COPY . ./
+RUN npm run build          # Vite outputs to /app/dist
+
+# Stage 2 — Serve
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
 ```
 
-2. Build the project with Docker and check if it is available in your images
-  
-```bash
-   docker build -t final-project-devops-nzo:local .
-   docker images
-```
+**Why multi-stage?**
+- Stage 1 (Node) compiles the app — this image is ~400MB+ with all dev dependencies.
+- Stage 2 (nginx:alpine) only copies the compiled static files — final image is ~25MB.
+- No Node.js, no source code, no dev dependencies in production.
 
-3. Run the Docker Container Locally
+**Port mapping:** container exposes `80`, mapped to `8080` on the host.
 
-```bash
-    docker run -d -p 8080:80 final-project-devops-nzo:local
-```
+---
 
-4. Test the Running Application
+## Running Locally (No Docker)
 
-   [Application Link](http://localhost:8080)
-
-## Docker-Hub
-
-1. Login into Docker (new users)
+**Prerequisites:** Node.js 20.15.0, Git
 
 ```bash
-    docker login
+git clone https://github.com/NicoZela23/final-project-devops-nzo.git
+cd final-project-devops-nzo
+npm install
+npm run dev
 ```
 
-and Enter your Docker Hub username and password when prompted.
+---
 
-2. Pull the project from Docker Hub
+## Run with Docker (Local Build)
+
+**Prerequisites:** Docker
 
 ```bash
-    docker pull nicozela23/final-project-devops-nzo
+# Clone
+git clone https://github.com/NicoZela23/final-project-devops-nzo.git
+cd final-project-devops-nzo
+
+# Build image locally
+docker build -t final-project-devops-nzo:local .
+
+# Verify image was created
+docker images | grep final-project-devops-nzo
+
+# Run container (host port 8080 → container port 80)
+docker run -d -p 8080:80 final-project-devops-nzo:local
+
+# Verify container is running
+docker ps
 ```
 
-3. Run the Docker Container
+Open [http://localhost:8080](http://localhost:8080)
+
+**Stop container:**
+```bash
+docker stop $(docker ps -q --filter ancestor=final-project-devops-nzo:local)
+```
+
+---
+
+## Pull from Docker Hub
+
+Images are pushed automatically by the CI/CD pipeline on every merge to `master`, tagged with the Git commit SHA.
 
 ```bash
-    docker run -d -p 8080:80 final-project-devops-nzo:local
+# Login (first time)
+docker login
+
+# Pull latest image
+docker pull nicozela23/final-project-devops-nzo
+
+# Run it
+docker run -d -p 8080:80 nicozela23/final-project-devops-nzo
+
+# Confirm running
+docker ps
 ```
 
-4. Check the running containers
+Open [http://localhost:8080](http://localhost:8080)
 
-```bash
-    docker ps
-```
+**Docker Hub repo:** [hub.docker.com/r/nicozela23/final-project-devops-nzo](https://hub.docker.com/r/nicozela23/final-project-devops-nzo)
 
-5. Test the Running Application
+---
 
-   [Application Link](http://localhost:8080)
+## Tech Stack
+
+| Layer | Tool |
+|-------|------|
+| Frontend | React 18, TypeScript, Vite |
+| Styling | Tailwind CSS |
+| Testing | Jest, React Testing Library |
+| Linting | ESLint |
+| Containerization | Docker (multi-stage, nginx:alpine) |
+| Registry | Docker Hub |
+| CI/CD | GitHub Actions |
